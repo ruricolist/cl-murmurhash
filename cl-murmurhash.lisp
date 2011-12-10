@@ -189,4 +189,4 @@ MURMURHASH to that seed.
 Return NIL if no perfect seed was found."
   (let ((seed (make-perfect-seed values)))
     (when seed
-      (lambda (key) (murmurhash key seed)))))
+      (lambda (key) (murmurhash key :seed seed)))))
