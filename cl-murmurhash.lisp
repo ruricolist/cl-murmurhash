@@ -95,8 +95,16 @@ state again."
         (mixf hash word)))
     hash))
 
+(define-condition unhashable-object-error (error)
+  ((object :initarg :object))
+  (:report (lambda (condition stream)
+             (format stream "Don't know how to hash ~S"
+                     (slot-value condition 'object)))))
+
 (defgeneric murmurhash (object &key)
-  (:documentation "Hash OBJECT using the 32-bit MurmurHash3 algorithm."))
+  (:documentation "Hash OBJECT using the 32-bit MurmurHash3 algorithm.")
+  (:method ((object t) &key)
+    (error 'unhashable-object-error :object object)))
 
 (defmethod murmurhash ((i integer) &key (seed *default-seed*) mix-only)
   (let ((hash (hash-integer i seed)))
