@@ -117,8 +117,22 @@ state again."
 (defmethod murmurhash ((c character) &key (seed *default-seed*) mix-only)
   (murmurhash (char-code c) :seed seed :mix-only mix-only))
 
+(defmethod murmurhash ((p package) &key (seed *default-seed*) mix-only)
+  (murmurhash (package-name p) :seed seed :mix-only mix-only))
+
 (defmethod murmurhash ((s symbol) &key (seed *default-seed*) mix-only)
-  (murmurhash (string s) :seed seed :mix-only mix-only))
+  (let ((hash seed)
+        (package (symbol-package s)))
+    (declare (type hash hash))
+    (when package
+      (mixf hash (murmurhash package :seed hash :mix-only t)))
+    (mixf hash (hash-string (symbol-name s) hash))
+    (if mix-only
+        hash
+        (finalize hash (+ (if package
+                              (length (package-name package))
+                              0)
+                          (length (symbol-name s)))))))
 
 (defmethod murmurhash ((n ratio) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
@@ -149,19 +163,36 @@ state again."
       (setf (ldb (byte 1 i) int) (row-major-aref bv i)))
     (murmurhash int :seed seed :mix-only mix-only)))
 
-(defmethod murmurhash ((list list) &key (seed *default-seed*) mix-only)
+(defmethod murmurhash ((cons cons) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
     (declare (type hash hash))
-    (dolist (elt list)
+    (dolist (elt cons)
       (mixf hash (murmurhash elt :seed hash :mix-only t)))
-    (if mix-only hash (finalize hash (length list)))))
+    (if mix-only hash (finalize hash (length cons)))))
 
 (defmethod murmurhash ((array array) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
     (declare (type hash hash))
+    (mixf hash (hash-integer (array-rank array) seed))
+    (mixf hash (hash-integer (array-dimensions array) seed))
+    (mixf hash (murmurhash (array-element-type array) :seed seed :mix-only t))
     (loop for elt across array
        do (mixf hash (murmurhash elt :seed hash :mix-only t)))
-    (if mix-only hash (finalize hash (length array)))))
+    (if mix-only hash (finalize hash (array-total-size array)))))
+
+(defmethod murmurhash ((ht hash-table) &key (seed *default-seed*) mix-only)
+  (let ((hash seed))
+    (declare (type hash hash))
+    (mixf hash (murmurhash (hash-table-test ht) :seed hash :mix-only t))
+    (maphash
+     (lambda (k v)
+       (mixf hash (murmurhash k :seed hash :mix-only t))
+       (mixf hash (murmurhash v :seed hash :mix-only t)))
+     ht)
+    (if mix-only hash (finalize hash (hash-table-count ht)))))
+
+(defmethod murmurhash ((p pathname) &key (seed *default-seed*) mix-only)
+  (murmurhash (namestring p) :seed seed :mix-only mix-only))
 
 ;; Cf. http://bitsquid.blogspot.com/2009/09/simple-perfect-murmur-hashing.html
 (defun make-perfect-seed (values)
