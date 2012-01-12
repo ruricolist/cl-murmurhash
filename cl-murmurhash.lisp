@@ -185,7 +185,7 @@ state again."
     (mixf hash (hash-integer (array-dimensions array) seed))
     (mixf hash (murmurhash (array-element-type array) :seed seed :mix-only t))
     (loop for elt across array
-       do (mixf hash (murmurhash elt :seed hash :mix-only t)))
+          do (mixf hash (murmurhash elt :seed hash :mix-only t)))
     (if mix-only hash (finalize hash (array-total-size array)))))
 
 (defmethod murmurhash ((ht hash-table) &key (seed *default-seed*) mix-only)
