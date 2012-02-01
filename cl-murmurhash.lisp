@@ -2,6 +2,8 @@
 
 (in-package #:cl-murmurhash)
 
+(deftype octet () '(unsigned-byte 8))
+
 (deftype word () '(unsigned-byte 32))
 
 (deftype hash () 'word)
@@ -95,6 +97,24 @@ state again."
         (mixf hash word)))
     hash))
 
+(defun hash-octets (vector seed)
+  (let ((hash seed) (seq (make-array 4 :element-type 'octet)))
+    (declare (type hash hash))
+    (flexi-streams:with-input-from-sequence (v vector)
+      (do ((octets (read-sequence seq v)
+                   (read-sequence seq v))
+           (word 0))
+          ((zerop octets) nil)
+        (declare (dynamic-extent word)
+                 (type word word)
+                 (type (integer 0 4) octets)
+                 (optimize speed))
+        (dotimes (i octets)
+          (setf (ldb (byte 8 (* 8 i)) word)
+                (aref seq i)))
+        (mixf hash word)))
+    hash))
+
 (define-condition unhashable-object-error (error)
   ((object :initarg :object))
   (:report (lambda (condition stream)
@@ -170,6 +190,15 @@ state again."
     (dotimes (i (array-total-size bv))
       (setf (ldb (byte 1 i) int) (row-major-aref bv i)))
     (murmurhash int :seed seed :mix-only mix-only)))
+
+;; HACK http://stackoverflow.com/a/6083441
+(defmethod murmurhash ((ov #.(class-of (make-array 0 :element-type 'octet)))
+                       &key (seed *default-seed*) mix-only)
+  (let ((hash (hash-octets ov seed)))
+    (declare (type hash hash))
+    (if mix-only
+        hash
+        (finalize hash (length ov)))))
 
 (defmethod murmurhash ((cons cons) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
