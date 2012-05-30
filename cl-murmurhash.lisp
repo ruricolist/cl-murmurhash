@@ -10,6 +10,8 @@
 
 (defparameter *default-seed* #xdeadbeef) ;It had to be something.
 
+(defparameter *external-format* :utf8)
+
 ;; Utilities
 
 (declaim (inline word+ word* rotl))
@@ -79,24 +81,6 @@ state again."
       (mixf hash (ldb (byte 32 (* i 32)) integer)))
     hash))
 
-(defun hash-string (string seed)
-  (let ((hash seed) (seq (make-string 4)))
-    (declare (type hash hash))
-    (with-input-from-string (s string)
-      (do ((chars (read-sequence seq s)
-                  (read-sequence seq s))
-           (word 0))
-          ((zerop chars) nil)
-        (declare (dynamic-extent word)
-                 (type word word)
-                 (type (integer 0 4) chars)
-                 (optimize speed))
-        (dotimes (i chars)
-          (setf (ldb (byte 8 (* 8 i)) word)
-                (ldb (byte 8 0) (char-code (schar seq i)))))
-        (mixf hash word)))
-    hash))
-
 (defun hash-octets (vector seed)
   (let ((hash seed) (seq (make-array 4 :element-type 'octet)))
     (declare (type hash hash))
@@ -134,11 +118,9 @@ state again."
         (finalize hash (integer-length i)))))
 
 (defmethod murmurhash ((s string) &key (seed *default-seed*) mix-only)
-  (let ((hash (hash-string s seed)))
-    (declare (type hash hash))
-    (if mix-only
-        hash
-        (finalize hash (length s)))))
+  (murmurhash (flexi-streams:string-to-octets
+               s :external-format *external-format*)
+              :seed seed :mix-only mix-only))
 
 ;; Other methods are special cases of integer or string.
 

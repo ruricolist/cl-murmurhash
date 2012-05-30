@@ -12,6 +12,10 @@ If you want to use a different seed, you can bind the parameter
 
      (murmurhash:murmurhash "Hash me" :seed *new-seed*)
 
+Strings are converted to octets using FLEXI-STREAMS:STRING-TO-OCTETS
+and the external format specified in *EXTERNAL-FORMAT*. The default
+encoding is UTF-8.
+
 There are two utilities for perfect hashing. MAKE-PERFECT-SEED takes a
 list of objects and tries to find a seed that hashes them all without
 collisions. MAKE-PERFECT-HASH-FUNCTION does the same, but returns a
