@@ -12,6 +12,9 @@ If you want to use a different seed, you can bind the parameter
 
      (murmurhash:murmurhash "Hash me" :seed *new-seed*)
 
+The size of the hash is controlled by *HASH-SIZE*, which can be bound
+to 32 (the default) or 128.
+
 Strings are converted to octets using FLEXI-STREAMS:STRING-TO-OCTETS
 and the external format specified in *EXTERNAL-FORMAT*. The default
 encoding is UTF-8.

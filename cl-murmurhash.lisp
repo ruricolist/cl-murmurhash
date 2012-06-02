@@ -12,47 +12,97 @@
 
 (defparameter *external-format* :utf8)
 
+(defparameter *hash-size* 32)
+
 ;; Utilities
 
-(declaim (inline word+ word* rotl))
+;; N.B. * and + are shadowed.
 
-(declaim (ftype (function (word word) word) word+ word* rotl))
+(declaim (inline + * << ^))
 
-(defun word+ (a b)
+(declaim (ftype (function (word word) word) + * << ^))
+
+(defun + (a b)
   (declare (type word a b))
-  (ldb (byte 32 0) (+ a b)))
+  (ldb (byte 32 0) (cl:+ a b)))
 
-(defun word* (a b)
+(define-modify-macro += (addend) +)
+
+(defun * (a b)
   (declare (type word a b))
-  (ldb (byte 32 0) (* a b)))
+  (ldb (byte 32 0) (cl:* a b)))
 
-(defun rotl (a s)
+(define-modify-macro *= (multiplicand) *)
+
+(defun << (a s)
   (declare (type word a s))
   (ldb (byte 32 0) (logior (ash a s) (ash a (- s 32)))))
 
+(define-modify-macro <<= (rotation) <<)
+
+(defun ^ (a b)
+  (declare (type word a b))
+  (logxor a b))
+
+(define-modify-macro ^= (int) ^)
+
 ;; The mixer and finalizer.
 
-(declaim (inline mix avalanche finalize))
-
-(declaim (ftype (function (word word) word) mix))
+(declaim (inline seed seeds mix avalanche finalize
+                 hash-integer hash-octets))
 
 (defun mix (hash-state word)
+  (ecase *hash-size*
+    (32 (mix/32 hash-state word))
+    (128 (mix/128 hash-state word))))
+
+(define-modify-macro mixf (word) mix)
+
+(defun mix/32 (hash-state word)
   "Mix WORD and HASH-STATE into a new hash state, then mix that hash
 state again."
   (declare (type hash hash-state)
            (type word word))
-  (let* ((w1 (word* word #xcc9e2d51))
-         (w2 (rotl w1 15))
-         (w3 (word* w2 #x1b873593))
+  (let* ((w1 (* word #xcc9e2d51))
+         (w2 (<< w1 15))
+         (w3 (* w2 #x1b873593))
          (h1 (logxor hash-state w3))
-         (h2 (rotl h1 13))
-         (h3 (word* h2 5))
-         (h4 (word+ h3 #xe6546b64)))
+         (h2 (<< h1 13))
+         (h3 (* h2 5))
+         (h4 (+ h3 #xe6546b64)))
     (declare (type word w1 w2 w3)
              (type hash h1 h2 h3 h4))
     h4))
 
-(define-modify-macro mixf (word) mix)
+(defun seed (h1 h2 h3 h4)
+  (list h1 h2 h3 h4))
+
+(defun seeds (seed)
+  (if (numberp seed)
+      (values seed seed seed seed)
+      (values-list seed)))
+
+(let ((c1 #x239b961b)
+      (c2 #xab0e9789)
+      (c3 #x38b34ae5)
+      (c4 #xa1e38b93))
+  (declare (word c1 c2 c3 c4))
+  (defun mix/128 (seed word)
+    (multiple-value-bind (h1 h2 h3 h4)
+        (seeds seed)
+      (multiple-value-bind (k1 k2 k3 k4)
+          (seeds word)
+        (declare (hash h1 h2 h3 h4)
+                 (word k1 k2 k3 k4))
+        (*= k1 c1)  (<<= k1 15) (*= k1 c2) (^= h1 k1)
+        (<<= h1 19) (+= h1 h2)  (*= h1 (+ 5 #x561ccd1b))
+        (*= k2 c2)  (<<= k2 16) (*= k2 c3) (^= h2 k2)
+        (<<= h2 17) (+= h2 h3)  (*= h2 (+ 5 #x0bcaa747))
+        (*= k3 c3)  (<<= k3 17) (*= k3 c4) (^= h3 k3)
+        (<<= h3 15) (+= h3 h4)  (*= h3 (+ 5 #x96cd1c35))
+        (*= k4 c4)  (<<= k4 18) (*= k4 c1) (^= h4 k4)
+        (<<= h4 13) (+= h1 h1)  (*= h4 (+ 5 #x32ac3b17))
+        (seed h1 h2 h3 h4)))))
 
 (declaim (ftype (function (word) word) avalanche))
 
@@ -61,29 +111,65 @@ state again."
   (declare (type hash hash-state))
   (let* ((h0 hash-state)
          (h1 (logxor h0 (ldb (byte 16 16) h0)))
-         (h2 (word* h1 #x85ebca6b))
+         (h2 (* h1 #x85ebca6b))
          (h3 (logxor h2 (ldb (byte 19 13) h2)))
-         (h4 (word* h3 #xc2b2ae35))
+         (h4 (* h3 #xc2b2ae35))
          (h5 (logxor h4 (ldb (byte 16 16) h4))))
     (declare (type hash h0 h1 h2 h3 h4 h5))
     h5))
 
 (defun finalize (hash-state length)
+  (ecase *hash-size*
+    (32 (finalize/32 hash-state length))
+    (128 (finalize/128 hash-state length))))
+
+(defun finalize/32 (hash-state length)
   (let ((hash hash-state))
     (declare (type hash hash))
     (setf hash (avalanche (logxor hash length)))
     hash))
 
-(defun hash-integer (integer seed)
+(defun finalize/128 (seed length)
+  (multiple-value-bind (h1 h2 h3 h4)
+      (seeds seed)
+    (declare (hash h1 h2 h3 h4))
+    (macrolet ((inc ()
+                 `(progn
+                    (+= h1 h2) (+= h1 h3) (+= h1 h4)
+                    (+= h2 h1) (+= h3 h1) (+= h4 h1))))
+      (^= h1 length) (^= h2 length)
+      (^= h3 length) (^= h4 length)
+      (inc)
+      (setf h1 (avalanche h1)
+            h2 (avalanche h2)
+            h3 (avalanche h3)
+            h4 (avalanche h4))
+      (inc))
+    (let ((out 0))
+      (setf (ldb (byte 32 0) out) h1
+            (ldb (byte 32 32) out) h2
+            (ldb (byte 32 64) out) h3
+            (ldb (byte 32 96) out) h4)
+      out)))
+
+(defun hash-integer (int seed)
+  (ecase *hash-size*
+    (32 (hash-integer/32 int seed))
+    (128 (hash-integer/128 int seed))))
+
+(defun hash-octets (vec seed)
+  (ecase *hash-size*
+    (32 (hash-octets/32 vec seed))
+    (128 (hash-octets/128 vec seed))))
+
+(defun hash-integer/32 (integer seed)
   (let ((hash seed))
-    (declare (type hash hash))
     (dotimes (i (ceiling (integer-length integer) 32))
       (mixf hash (ldb (byte 32 (* i 32)) integer)))
     hash))
 
-(defun hash-octets (vector seed)
+(defun hash-octets/32 (vector seed)
   (let ((hash seed) (seq (make-array 4 :element-type 'octet)))
-    (declare (type hash hash))
     (flexi-streams:with-input-from-sequence (v vector)
       (do ((octets (read-sequence seq v)
                    (read-sequence seq v))
@@ -99,6 +185,66 @@ state again."
         (mixf hash word)))
     hash))
 
+(defmacro while (test &body body)
+  `(loop (unless ,test (return))
+         ,@body))
+
+(defun hash-integer/128 (integer seed)
+  (multiple-value-bind (h1 h2 h3 h4)
+      (seeds seed)
+    (declare (hash h1 h2 h3 h4))
+    (let ((blocks (ceiling (integer-length integer) 32))
+          (i 0))
+      (labels ((extract (position)
+                 (ldb (byte 32 position) integer)))
+        (declare (inline extract))
+        (let ((k1 0) (k2 0) (k3 0) (k4 0))
+          (declare (word k1 k2 k3 k4)
+                   (dynamic-extent k1 k2 k3 k4)
+                   (optimize speed))
+          (while (< i blocks)
+            (setf k1 (extract 0)
+                  k2 (extract 32)
+                  k3 (extract 64)
+                  k4 (extract 96))
+            (setf (values h1 h2 h3 h4)
+                  (seeds (mix/128 (seed h1 h2 h3 h4)
+                                  (seed k1 k2 k3 k4))))
+            (incf i 4)))))
+    (seed h1 h2 h3 h4)))
+
+(defun snarf-word (stream seq)
+  (let ((k 0))
+    (declare (word k))
+    (dotimes (i (read-sequence seq stream))
+      (declare ((integer 0 4) i))
+      (setf (ldb (byte 8 (* 8 i)) k)
+            (aref seq i)))
+    k))
+
+(defun hash-octets/128 (vector seed)
+  (multiple-value-bind (h1 h2 h3 h4)
+      (seeds seed)
+    (let ((seq (make-array 4 :element-type 'octet)))
+      (declare (hash h1 h2 h3 h4))
+      (declare (inline snarf-word))
+      (flexi-streams:with-input-from-sequence (v vector)
+        (let ((v (flexi-streams:make-flexi-stream
+                  v :external-format *external-format*)))
+          (let ((k1 0) (k2 0) (k3 0) (k4 0))
+            (declare (dynamic-extent k1 k2 k3 k4)
+                     (word k1 k2 k3 k4)
+                     (optimize speed))
+            (while (flexi-streams:peek-byte v nil nil nil)
+              (setf k1 (snarf-word v seq)
+                    k2 (snarf-word v seq)
+                    k3 (snarf-word v seq)
+                    k4 (snarf-word v seq))
+              (setf (values h1 h2 h3 h4)
+                    (seeds (mix/128 (seed h1 h2 h3 h4)
+                                    (seed k1 k2 k3 k4))))))))
+      (seed h1 h2 h3 h4))))
+
 (define-condition unhashable-object-error (error)
   ((object :initarg :object))
   (:report (lambda (condition stream)
@@ -112,17 +258,24 @@ state again."
 
 (defmethod murmurhash ((i integer) &key (seed *default-seed*) mix-only)
   (let ((hash (hash-integer i seed)))
-    (declare (type hash hash))
     (if mix-only
         hash
         (finalize hash (integer-length i)))))
 
-(defmethod murmurhash ((s string) &key (seed *default-seed*) mix-only)
-  (murmurhash (flexi-streams:string-to-octets
-               s :external-format *external-format*)
-              :seed seed :mix-only mix-only))
+;; HACK http://stackoverflow.com/a/6083441
+(defmethod murmurhash ((ov #.(class-of (make-array 0 :element-type 'octet)))
+                       &key (seed *default-seed*) mix-only)
+  (let ((hash (hash-octets ov seed)))
+    (if mix-only
+        hash
+        (finalize hash (length ov)))))
 
-;; Other methods are special cases of integer or string.
+;; Other methods are special cases of integers or octets.
+
+(defmethod murmurhash ((s string) &key (seed *default-seed*) mix-only)
+  (murmurhash
+   (flexi-streams:string-to-octets s :external-format *external-format*)
+   :seed seed :mix-only mix-only))
 
 (defmethod murmurhash ((c character) &key (seed *default-seed*) mix-only)
   (murmurhash (char-code c) :seed seed :mix-only mix-only))
@@ -132,16 +285,15 @@ state again."
 
 (defmethod murmurhash ((s symbol) &key (seed *default-seed*) mix-only)
   (let ((*package* (find-package :keyword)))
-    (murmurhash (prin1-to-string s) :seed see :mix-only mix-only)))
+    (murmurhash (prin1-to-string s) :seed seed :mix-only mix-only)))
 
 (defmethod murmurhash ((n ratio) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
-    (declare (type hash hash))
     (mixf hash (hash-integer (numerator n) hash))
     (mixf hash (hash-integer (denominator n) hash))
     (if mix-only hash
-        (finalize hash (+ (integer-length (numerator n))
-                          (integer-length (denominator n)))))))
+        (finalize hash (cl:+ (integer-length (numerator n))
+                             (integer-length (denominator n)))))))
 
 (defmethod murmurhash ((n float) &key (seed *default-seed*) mix-only)
   (murmurhash (rational n) :seed seed :mix-only mix-only))
@@ -153,8 +305,8 @@ state again."
     (mixf hash (hash-integer (imagpart n) hash))
     (if mix-only
         hash
-        (finalize hash (+ (integer-length (realpart n))
-                          (integer-length (imagpart n)))))))
+        (finalize hash (cl:+ (integer-length (realpart n))
+                             (integer-length (imagpart n)))))))
 
 (defmethod murmurhash ((bv bit-vector) &key (seed *default-seed*) mix-only)
   (let ((int 0))
@@ -163,25 +315,14 @@ state again."
       (setf (ldb (byte 1 i) int) (row-major-aref bv i)))
     (murmurhash int :seed seed :mix-only mix-only)))
 
-;; HACK http://stackoverflow.com/a/6083441
-(defmethod murmurhash ((ov #.(class-of (make-array 0 :element-type 'octet)))
-                       &key (seed *default-seed*) mix-only)
-  (let ((hash (hash-octets ov seed)))
-    (declare (type hash hash))
-    (if mix-only
-        hash
-        (finalize hash (length ov)))))
-
 (defmethod murmurhash ((cons cons) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
-    (declare (type hash hash))
     (dolist (elt cons)
       (mixf hash (murmurhash elt :seed hash :mix-only t)))
     (if mix-only hash (finalize hash (length cons)))))
 
 (defmethod murmurhash ((array array) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
-    (declare (type hash hash))
     (mixf hash (hash-integer (array-rank array) seed))
     (mixf hash (hash-integer (array-dimensions array) seed))
     (mixf hash (murmurhash (array-element-type array) :seed seed :mix-only t))
@@ -191,7 +332,6 @@ state again."
 
 (defmethod murmurhash ((ht hash-table) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
-    (declare (type hash hash))
     (mixf hash (murmurhash (hash-table-test ht) :seed hash :mix-only t))
     (maphash
      (lambda (k v)
