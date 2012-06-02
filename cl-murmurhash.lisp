@@ -149,18 +149,8 @@ state again."
   (murmurhash (package-name p) :seed seed :mix-only mix-only))
 
 (defmethod murmurhash ((s symbol) &key (seed *default-seed*) mix-only)
-  (let ((hash seed)
-        (package (symbol-package s)))
-    (declare (type hash hash))
-    (when package
-      (mixf hash (murmurhash package :seed hash :mix-only t)))
-    (mixf hash (hash-string (symbol-name s) hash))
-    (if mix-only
-        hash
-        (finalize hash (+ (if package
-                              (length (package-name package))
-                              0)
-                          (length (symbol-name s)))))))
+  (let ((*package* (find-package :keyword)))
+    (murmurhash (prin1-to-string s) :seed see :mix-only mix-only)))
 
 (defmethod murmurhash ((n ratio) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
