@@ -332,7 +332,7 @@ state again."
 (defmethod murmurhash ((array array) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
     (mixf hash (hash-integer (array-rank array) seed))
-    (mixf hash (hash-integer (array-dimensions array) seed))
+    (mixf hash (murmurhash (array-dimensions array) :seed seed :mix-only t))
     (mixf hash (murmurhash (array-element-type array) :seed seed :mix-only t))
     (loop for elt across array
           do (mixf hash (murmurhash elt :seed hash :mix-only t)))
