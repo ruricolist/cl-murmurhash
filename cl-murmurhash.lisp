@@ -10,8 +10,6 @@
 
 (defparameter *default-seed* #xdeadbeef) ;It had to be something.
 
-(defparameter *external-format* :utf8)
-
 (defparameter *hash-size* 32)
 
 ;; Utilities
@@ -229,8 +227,7 @@ state again."
       (declare (hash h1 h2 h3 h4))
       (declare (inline snarf-word))
       (flexi-streams:with-input-from-sequence (v vector)
-        (let ((v (flexi-streams:make-flexi-stream
-                  v :external-format *external-format*)))
+        (let ((v (flexi-streams:make-flexi-stream v)))
           (let ((k1 0) (k2 0) (k3 0) (k4 0))
             (declare (dynamic-extent k1 k2 k3 k4)
                      (word k1 k2 k3 k4)
@@ -274,7 +271,7 @@ state again."
 
 (defmethod murmurhash ((s string) &key (seed *default-seed*) mix-only)
   (murmurhash
-   (flexi-streams:string-to-octets s :external-format *external-format*)
+   (babel:string-to-octets s)
    :seed seed :mix-only mix-only))
 
 (defmethod murmurhash ((c character) &key (seed *default-seed*) mix-only)
