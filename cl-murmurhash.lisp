@@ -378,3 +378,19 @@ Return NIL if no perfect seed was found."
   (let ((seed (make-perfect-seed values)))
     (when seed
       (lambda (key) (murmurhash key :seed seed)))))
+
+(defun test ()
+  (time
+   (let ((ht (make-hash-table :test 'equal))
+         (collisions 0)
+         (syms 0))
+     (do-all-symbols (sym)
+       (incf syms)
+       (let* ((str (string sym))
+              (hash (murmurhash str)))
+         (if (gethash hash ht)
+             (unless (string= (gethash hash ht) str)
+               (incf collisions))
+             (setf (gethash hash ht) str))))
+     (format *trace-output* "Hashed ~D symbols with ~D collision~:P"
+             syms collisions))))
