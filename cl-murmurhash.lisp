@@ -18,8 +18,6 @@
 
 (declaim (inline + * << ^))
 
-(declaim (ftype (function (word word) word) + * << ^))
-
 (defun + (a b)
   (declare (type word a b))
   (ldb (byte 32 0) (cl:+ a b)))
@@ -37,6 +35,8 @@
   (ldb (byte 32 0) (logior (ash a s) (ash a (- s 32)))))
 
 (define-modify-macro <<= (rotation) <<)
+
+(declaim (ftype (function (word word) word) ^))
 
 (defun ^ (a b)
   (declare (type word a b))
@@ -168,9 +168,9 @@ state again."
 
 (defun hash-octets/32 (vector seed)
   (let ((hash seed) (seq (make-array 4 :element-type 'octet)))
-    (flexi-streams:with-input-from-sequence (v vector)
-      (do ((octets (read-sequence seq v)
-                   (read-sequence seq v))
+    (fast-io:with-fast-input (v vector)
+      (do ((octets (fast-io:fast-read-sequence seq v)
+                   (fast-io:fast-read-sequence seq v))
            (word 0))
           ((zerop octets) nil)
         (declare (dynamic-extent word)
@@ -214,7 +214,7 @@ state again."
 (defun snarf-word (stream seq)
   (let ((k 0))
     (declare (word k))
-    (dotimes (i (read-sequence seq stream))
+    (dotimes (i (fast-io:fast-read-sequence seq stream))
       (declare ((integer 0 4) i))
       (setf (ldb (byte 8 (* 8 i)) k)
             (aref seq i)))
@@ -226,20 +226,19 @@ state again."
     (let ((seq (make-array 4 :element-type 'octet)))
       (declare (hash h1 h2 h3 h4))
       (declare (inline snarf-word))
-      (flexi-streams:with-input-from-sequence (v vector)
-        (let ((v (flexi-streams:make-flexi-stream v)))
-          (let ((k1 0) (k2 0) (k3 0) (k4 0))
-            (declare (dynamic-extent k1 k2 k3 k4)
-                     (word k1 k2 k3 k4)
-                     (optimize speed))
-            (while (flexi-streams:peek-byte v nil nil nil)
-              (setf k1 (snarf-word v seq)
-                    k2 (snarf-word v seq)
-                    k3 (snarf-word v seq)
-                    k4 (snarf-word v seq))
-              (setf (values h1 h2 h3 h4)
-                    (seeds (mix/128 (seed h1 h2 h3 h4)
-                                    (seed k1 k2 k3 k4))))))))
+      (fast-io:with-fast-input (v vector)
+        (let ((k1 0) (k2 0) (k3 0) (k4 0))
+          (declare (dynamic-extent k1 k2 k3 k4)
+                   (word k1 k2 k3 k4)
+                   (optimize speed))
+          (while (fast-io:fast-peek-byte v nil nil nil)
+            (setf k1 (snarf-word v seq)
+                  k2 (snarf-word v seq)
+                  k3 (snarf-word v seq)
+                  k4 (snarf-word v seq))
+            (setf (values h1 h2 h3 h4)
+                  (seeds (mix/128 (seed h1 h2 h3 h4)
+                                  (seed k1 k2 k3 k4)))))))
       (seed h1 h2 h3 h4))))
 
 (define-condition unhashable-object-error (error)
@@ -376,7 +375,7 @@ Return NIL if no perfect seed was found."
     (when seed
       (lambda (key) (murmurhash key :seed seed)))))
 
-(defun test ()
+(defun test (&key ((:hash-size *hash-size*) 32))
   (time
    (let ((ht (make-hash-table :test 'equal))
          (collisions 0)

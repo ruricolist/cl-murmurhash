@@ -5,6 +5,6 @@
   :description "32-bit version of MurmurHash3."
   :license "MIT"
   :serial t
-  :depends-on (#:flexi-streams #:babel)
+  :depends-on (#:babel #:fast-io)
   :components ((:file "package")
                (:file "cl-murmurhash")))
