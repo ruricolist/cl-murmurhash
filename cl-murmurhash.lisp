@@ -8,7 +8,7 @@
 
 (deftype hash () 'word)
 
-(deftype seeds () '(simple-array (unsigned-byte 32) (4)))
+(deftype seed () '(simple-array (unsigned-byte 32) (4)))
 
 (defparameter *default-seed* #xdeadbeef) ;It had to be something.
 
@@ -46,8 +46,6 @@
 
 (define-modify-macro <<= (rotation) <<)
 
-(declaim (ftype (function (word word) word) ^))
-
 (defun ^ (a b)
   (declare (type word a b))
   (logxor a b))
@@ -84,19 +82,29 @@ state again."
 
 (declaim (inline seed seeds))
 
-(defun seed (h1 h2 h3 h4)
+(defun make-seed ()
+  (make-array 4 :element-type 'word))
+
+(defun seed (h1 h2 h3 h4 &optional (seed (make-seed)))
   (declare (optimize speed))
-  (ret (seed (make-array 4 :element-type 'word))
-    (setf (aref seed 0) h1
-          (aref seed 1) h2
-          (aref seed 2) h3
-          (aref seed 3) h4)))
+  (labels ((fill-seed (seed)
+             (declare (seed seed))
+             (setf (aref seed 0) h1
+                   (aref seed 1) h2
+                   (aref seed 2) h3
+                   (aref seed 3) h4)
+             (values)))
+    (etypecase seed
+      (number (ret (seed (make-seed))
+                (fill-seed seed)))
+      (seed   (fill-seed seed)
+              seed))))
 
 (defun seeds (seed)
   (declare (optimize speed))
   (etypecase seed
     (number (values seed seed seed seed))
-    (seeds  (values (aref seed 0)
+    (seed   (values (aref seed 0)
                     (aref seed 1)
                     (aref seed 2)
                     (aref seed 3)))))
@@ -122,7 +130,7 @@ state again."
       (<<= h3 15)   (+= h3 h4)  (*= h3 (+ 5 #x96cd1c35))
       (*= k4 +c4+)  (<<= k4 18) (*= k4 +c1+) (^= h4 k4)
       (<<= h4 13)   (+= h1 h1)  (*= h4 (+ 5 #x32ac3b17))
-      (seed h1 h2 h3 h4))))
+      (seed h1 h2 h3 h4 seed))))
 
 (declaim (ftype (function (word) word) avalanche))
 
@@ -225,7 +233,8 @@ state again."
       (labels ((extract (position)
                  (ldb (byte 32 position) integer)))
         (declare (inline extract))
-        (let ((k1 0) (k2 0) (k3 0) (k4 0))
+        (let* ((k1 0) (k2 0) (k3 0) (k4 0)
+               (k-seed (seed k1 k2 k3 k4)))
           (declare (word k1 k2 k3 k4)
                    (dynamic-extent k1 k2 k3 k4)
                    (optimize speed))
@@ -235,10 +244,10 @@ state again."
                   k3 (extract 64)
                   k4 (extract 96))
             (setf (values h1 h2 h3 h4)
-                  (seeds (mix/128 (seed h1 h2 h3 h4)
-                                  (seed k1 k2 k3 k4))))
+                  (seeds (mix/128 (seed h1 h2 h3 h4 seed)
+                                  (seed k1 k2 k3 k4 k-seed))))
             (incf i 4)))))
-    (seed h1 h2 h3 h4)))
+    (seed h1 h2 h3 h4 seed)))
 
 (defun snarf-word (stream seq)
   (let ((k 0))
@@ -256,7 +265,8 @@ state again."
     (let ((seq (make-array 4 :element-type 'octet)))
       (declare (inline snarf-word))
       (fast-io:with-fast-input (v vector)
-        (let ((k1 0) (k2 0) (k3 0) (k4 0))
+        (let* ((k1 0) (k2 0) (k3 0) (k4 0)
+               (k-seed (seed k1 k2 k3 k4)))
           (declare (dynamic-extent k1 k2 k3 k4)
                    (word k1 k2 k3 k4)
                    (optimize speed))
@@ -266,9 +276,9 @@ state again."
                   k3 (snarf-word v seq)
                   k4 (snarf-word v seq))
             (setf (values h1 h2 h3 h4)
-                  (seeds (mix/128 (seed h1 h2 h3 h4)
-                                  (seed k1 k2 k3 k4)))))))
-      (seed h1 h2 h3 h4))))
+                  (seeds (mix/128 (seed h1 h2 h3 h4 seed)
+                                  (seed k1 k2 k3 k4 k-seed)))))))
+      (seed h1 h2 h3 h4 seed))))
 
 (define-condition unhashable-object-error (error)
   ((object :initarg :object))
