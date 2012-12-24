@@ -8,6 +8,8 @@
 
 (deftype hash () 'word)
 
+(deftype seeds () '(simple-array (unsigned-byte 32) (4)))
+
 (defparameter *default-seed* #xdeadbeef) ;It had to be something.
 
 (defparameter *hash-size* 32)
@@ -80,13 +82,24 @@ state again."
              (type hash h1 h2 h3 h4))
     h4))
 
+(declaim (inline seed seeds))
+
 (defun seed (h1 h2 h3 h4)
-  (list h1 h2 h3 h4))
+  (declare (optimize speed))
+  (ret (seed (make-array 4 :element-type 'word))
+    (setf (aref seed 0) h1
+          (aref seed 1) h2
+          (aref seed 2) h3
+          (aref seed 3) h4)))
 
 (defun seeds (seed)
-  (if (numberp seed)
-      (values seed seed seed seed)
-      (values-list seed)))
+  (declare (optimize speed))
+  (etypecase seed
+    (number (values seed seed seed seed))
+    (seeds  (values (aref seed 0)
+                    (aref seed 1)
+                    (aref seed 2)
+                    (aref seed 3)))))
 
 (defconstant +c1+ #x239b961b)
 (defconstant +c2+ #xab0e9789)
@@ -176,7 +189,9 @@ state again."
     hash))
 
 (defun hash-octets/32 (vector seed)
-  (let ((hash seed) (seq (make-array 4 :element-type 'octet)))
+  (let ((hash seed)
+        (seq (make-array 4 :element-type 'octet)))
+    (declare (hash hash))
     (fast-io:with-fast-input (v vector)
       (do ((octets (fast-io:fast-read-sequence seq v)
                    (fast-io:fast-read-sequence seq v))
@@ -195,6 +210,11 @@ state again."
 (defmacro while (test &body body)
   `(loop (unless ,test (return))
          ,@body))
+
+(defmacro ret ((var val) &body body)
+  `(let ((,var ,val))
+     ,@body
+     ,var))
 
 (defun hash-integer/128 (integer seed)
   (multiple-value-bind (h1 h2 h3 h4)
@@ -232,8 +252,8 @@ state again."
 (defun hash-octets/128 (vector seed)
   (multiple-value-bind (h1 h2 h3 h4)
       (seeds seed)
+    (declare (hash h1 h2 h3 h4))
     (let ((seq (make-array 4 :element-type 'octet)))
-      (declare (hash h1 h2 h3 h4))
       (declare (inline snarf-word))
       (fast-io:with-fast-input (v vector)
         (let ((k1 0) (k2 0) (k3 0) (k4 0))
