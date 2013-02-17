@@ -36,6 +36,7 @@
 
 (define-modify-macro *= (multiplicand) *)
 
+#-sbcl
 (defun << (a s)
   (declare (type word a s))
   (ldb (byte 32 0) (logior (ash a s) (ash a (- s 32)))))
