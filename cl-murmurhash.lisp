@@ -103,10 +103,11 @@ state again."
                    (aref seed 3) h4)
              (values)))
     (etypecase seed
-      (number (ret (seed (make-seed))
-                (fill-seed seed)))
+      (number (let ((seed (make-seed)))
+                (fill-seed seed)
+                seed))
       (seed   (fill-seed seed)
-              seed))))
+       seed))))
 
 (defun seeds (seed)
   (declare (optimize speed))
@@ -237,11 +238,6 @@ state again."
 (defmacro while (test &body body)
   `(loop (unless ,test (return))
          ,@body))
-
-(defmacro ret ((var val) &body body)
-  `(let ((,var ,val))
-     ,@body
-     ,var))
 
 (defun hash-integer/128 (integer seed)
   (multiple-value-bind (h1 h2 h3 h4)
