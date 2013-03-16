@@ -42,10 +42,6 @@
   (ldb (byte 32 0) (logior (ash a s) (ash a (- s 32)))))
 
 #+sbcl
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (require :sb-rotate-byte))
-
-#+sbcl
 (defun << (a s)
   (declare (word a s))
   (sb-rotate-byte:rotate-byte s (byte 32 0) a))
