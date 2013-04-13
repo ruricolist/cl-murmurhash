@@ -4,12 +4,6 @@
 
 (deftype octet () '(unsigned-byte 8))
 
-(deftype word () '(unsigned-byte 32))
-
-(deftype hash () 'word)
-
-(deftype seed () '(simple-array (unsigned-byte 32) (4)))
-
 (deftype u32 () '(unsigned-byte 32))
 
 (deftype octet-vector (&optional n)
@@ -23,299 +17,301 @@
 
 (defparameter *hash-size* 32)
 
-;; Utilities
+(declaim (type (member 32 128) *hash-size*))
+
+
+;;;; Utilities
 
 ;; N.B. * and + are shadowed.
 
-(declaim (inline + * << ^))
+(deftype mod32 ()
+  '(-> (u32 u32) u32))
+
+(declaim (inline + * << >> rotl ^))
+
+(declaim (ftype mod32 + * rotl << >> ^))
 
 (defun + (a b)
-  (declare (type word a b))
+  (declare (type u32 a b))
   (ldb (byte 32 0) (cl:+ a b)))
 
 (define-modify-macro += (addend) +)
 
 (defun * (a b)
-  (declare (type word a b))
+  (declare (type u32 a b))
   (ldb (byte 32 0) (cl:* a b)))
 
 (define-modify-macro *= (multiplicand) *)
 
 #-sbcl
-(defun << (a s)
-  (declare (type word a s))
-  (ldb (byte 32 0) (logior (ash a s) (ash a (- s 32)))))
+(defun rotl (a s)
+  (declare (type u32 a s))
+  (logior (ldb (byte 32 0) (ash a s))
+          (ldb (byte 32 0)
+               (ash a (- 0 (- 32 s))))))
 
 #+sbcl
+(defun rotl (a s)
+  (declare (u32 a s))
+  (ldb (byte 32 0)
+       (sb-rotate-byte:rotate-byte s (byte 32 0) a)))
+
+(define-modify-macro rotlf (s) rotl)
+
 (defun << (a s)
-  (declare (word a s))
-  (sb-rotate-byte:rotate-byte s (byte 32 0) a))
+  (ldb (byte 32 0) (ash a s)))
 
-(define-modify-macro <<= (rotation) <<)
+(defun >> (a s)
+  (ash a (- s)))
 
-(defun ^ (a b)
-  (declare (type word a b))
-  (logxor a b))
+(defun ^ (x y)
+  (ldb (byte 32 0) (logxor x y)))
 
 (define-modify-macro ^= (int) ^)
 
-;; Simple input buffers.
+
+;;;; The actual implementation.
 
-(declaim (inline make-input-buffer))    ;For stack-allocation.
+(declaim (ftype (-> (u32) u32) fmix32)
+         (inline fmix32))
 
-(defstruct input-buffer
-  (vector (error "No vector") :type octet-vector :read-only t)
-  (pointer 0 :type index))
+(defun fmix32 (h)
+  (declare (u32 h))
+  (^= h (ash h -16))
+  (*= h #x85ebca6b)
+  (^= h (ash h -13))
+  (*= h #xc2b2ae35)
+  (^= h (ash h -16)))
 
-(defun read-seq (seq buf)
-  (declare (octet-vector seq) (optimize speed))
-  (with-accessors ((vec input-buffer-vector)
-                   (pointer input-buffer-pointer))
-      buf
-    (replace seq vec :start2 pointer)
-    (let ((old pointer))
-      (setf pointer
-            (min (length vec) (+ pointer (length seq))))
-      (- pointer old))))
+(define-modify-macro avalanche () fmix32)
 
-;; The mixer and finalizer.
+(declaim (ftype (-> (integer (integer 0 cl:*)) (unsigned-byte 8)) byte-ref))
 
-(declaim (inline seed seeds mix avalanche finalize
-                 hash-integer hash-octets))
+(defun byte-ref (int pos)
+  (ldb (byte 8 (* pos 8)) int))
 
-(defun mix (hash-state word)
+(defun byte-length (int)
+  (ceiling (integer-length int) 8))
+
+(declaim (ftype (-> (simple-string index) (unsigned-byte 8)) char-ref))
+
+(defun char-ref (string pos)
+  (char-code (schar string pos)))
+
+(defmacro switch (value &body clauses)
+  (let ((break (gensym)))
+    `(macrolet ((break ()
+                  `(go ,',break)))
+       (tagbody
+          (case ,value
+            ,@(loop for (tag . body) in clauses
+                    collect `(,tag (go ,tag)))
+            (t (break)))
+          ,@(apply #'append clauses)
+          ,break))))
+
+(macrolet ((hash32-body (ref)
+             `(let* ((end (logand #xfffffffc len))
+                     (c1 #xcc9e2d51)
+                     (c2 #x1b873593)
+                     (h1 seed))
+                (declare (index end) (u32 h1))
+                (loop for i of-type index below end by 4 do
+                  (let ((k1 (logior (,ref vec i)
+                                    (ash (,ref vec (+ i 1)) 8)
+                                    (ash (,ref vec (+ i 2)) 16)
+                                    (ash (,ref vec (+ i 3)) 24))))
+                    (declare (u32 k1))
+                    (*= k1 c1)
+                    (rotlf k1 15)
+                    (*= k1 c2)
+                    (^= h1 k1)
+                    (rotlf h1 13)
+                    (setf h1 (+ (* h1 5) #xe6546b64))))
+                (let ((k1 0))
+                  (declare (u32 k1))
+                  (switch (logand len 3)
+                    (3 (^= k1 (ash (,ref vec (+ end 2)) 16)))
+                    (2 (^= k1 (ash (,ref vec (+ end 1)) 8)))
+                    (1 (^= k1 (,ref vec end))
+                       (*= k1 c1)
+                       (rotlf k1 15)
+                       (*= k1 c2)
+                       (^= h1 k1))))
+                (unless mix-only
+                  (^= h1 len)
+                  (avalanche h1))
+                h1)))
+  (locally (declare (optimize (speed 3) (safety 0) (debug 0)))
+
+    (defun hash32-octets (vec seed &optional (len (length vec)) mix-only)
+      (declare (index len) (octet-vector vec))
+      (hash32-body aref))
+
+    (defun hash32-integer (vec seed &optional (len (byte-length vec)) mix-only)
+      (declare (integer vec) ((integer 0 cl:*) len))
+      (if (typep vec 'u32)
+          (locally (declare (type (integer 0 4) len))
+            (hash32-body byte-ref))
+          (hash32-body byte-ref)))
+
+    (defun hash32-base-string (vec seed &optional (len (length vec)) mix-only)
+      (declare (index len) (simple-string vec))
+      (hash32-body char-ref))))
+
+(macrolet ((hash128-body (ref)
+             `(let ((end (logand #xfffffff0 len))
+                    (h1 seed) (h2 seed) (h3 seed) (h4 seed)
+                    (c1 #x239b961b)
+                    (c2 #xab0e9789)
+                    (c3 #x38b34ae5)
+                    (c4 #xa1e38b93))
+                (declare (u32 h1 h2 h3 h4))
+                (macrolet ((getblock (i)
+                             `(logior (,',ref vec ,i)
+                                      (ash (,',ref vec (+ ,i 1)) 8)
+                                      (ash (,',ref vec (+ ,i 2)) 16)
+                                      (ash (,',ref vec (+ ,i 3)) 24))))
+                  (loop for i from 0 below end by 16 do
+                    (let ((k1 (getblock i))
+                          (k2 (getblock (+ i 4)))
+                          (k3 (getblock (+ i 8)))
+                          (k4 (getblock (+ i 12))))
+                      (declare (u32 k1 k2 k3 k4))
+                      (*= k1 c1) (rotlf k1 15) (*= k1 c2) (^= h1 k1)
+                      (rotlf h1 19) (+= h1 h2) (setf h1 (+ (* h1 5) #x561ccd1b))
+                      (*= k2 c2) (rotlf k2 16) (*= k2 c3) (^= h2 k2)
+                      (rotlf h2 17) (+= h2 h3) (setf h2 (+ (* h2 5) #x0bcaa747))
+                      (*= k3 c3) (rotlf k3 17) (*= k3 c4) (^= h3 k3)
+                      (rotlf h3 15) (+= h3 h4) (setf h3 (+ (* h3 5) #x96cd1c35))
+                      (*= k4 c4) (rotlf k4 18) (*= k4 c1) (^= h4 k4)
+                      (rotlf h4 13) (+= h4 h1) (setf h4 (+ (* h4 5) #x32ac3b17))))
+                  (let ((k4 0) (k3 0) (k2 0) (k1 0))
+                    (declare (u32 k4 k3 k2 k1)
+                             (dynamic-extent k4 k3 k2 k1))
+                    (macrolet ((tail (n)
+                                 `(,',ref vec (+ ,n end))))
+                      (switch (logand len 15)
+                        (15 (^= k4 (ash (tail 14) 16)))
+                        (14 (^= k4 (ash (tail 13) 8)))
+                        (13 (^= k4 (tail 12))
+                            (*= k4 c4) (rotlf k4 18) (*= k4 c1) (^= h4 k4))
+
+                        (12 (^= k3 (ash (tail 11) 24)))
+                        (11 (^= k3 (ash (tail 10) 16)))
+                        (10 (^= k3 (ash (tail 9)   8)))
+                        (9  (^= k3 (tail 8))
+                            (*= k3 c3) (rotlf k3 17) (*= k3 c4) (^= h3 k3))
+
+                        (8 (^= k2 (ash (tail 7) 24)))
+                        (7 (^= k2 (ash (tail 6) 16)))
+                        (6 (^= k2 (ash (tail 5)  8)))
+                        (5 (^= k2 (tail 4))
+                           (*= k2 c2) (rotlf k2 16) (*= k2 c3) (^= h2 k2))
+
+                        (4 (^= k1 (ash (tail 3) 24)))
+                        (3 (^= k1 (ash (tail 2) 16)))
+                        (2 (^= k1 (ash (tail 1)  8)))
+                        (1 (^= k1 (tail 0))
+                           (*= k1 c1) (rotlf k1 15) (*= k1 c2) (^= h1 k1)))))
+
+                  (unless mix-only
+
+                    (^= h1 len)
+                    (^= h2 len)
+                    (^= h3 len)
+                    (^= h4 len)
+
+                    (macrolet ((adds ()
+                                 `(progn
+                                    (+= h1 h2) (+= h1 h3) (+= h1 h4)
+                                    (+= h2 h1) (+= h3 h1) (+= h4 h1))))
+                      (adds)
+
+                      (avalanche h1)
+                      (avalanche h2)
+                      (avalanche h3)
+                      (avalanche h4)
+
+                      (adds)))
+
+                  (logior h1 (ash h2 32) (ash h3 64) (ash h4 96))))))
+
+  (locally (declare (optimize (speed 3) (safety 0) (debug 0)))
+
+    (defun hash128-octets (vec seed &optional (len (length vec)) mix-only)
+      (declare (optimize speed)
+               (index len)
+               (octet-vector vec))
+      (hash128-body aref))
+
+    (defun hash128-integer (vec seed &optional (len (byte-length vec)) mix-only)
+      (declare (integer vec))
+      (hash128-body byte-ref))
+
+    (defun hash128-base-string (vec seed &optional (len (length vec)) mix-only)
+      (declare (index len) (simple-string vec)
+               (optimize speed))
+      (hash128-body char-ref))))
+
+(declaim (inline hash-string mix32 finalize32 mix128 finalize128))
+
+(defun hash-string (s seed mix-only)
+  (let* ((size *hash-size*)
+         (hash (ecase size
+                 (32 #'hash32-base-string)
+                 (128 #'hash128-base-string))))
+    (cond ((typep s 'simple-base-string)
+           (funcall hash s seed (length s) mix-only))
+          ((every (lambda (c) (typep c 'base-char)) s)
+           (funcall hash (coerce s 'simple-string) seed (length s) mix-only))
+          (t (let ((octets (babel:string-to-octets s)))
+               (ecase size
+                 (32 (hash32-octets octets seed (length octets) mix-only))
+                 (128 (hash128-octets octets seed (length octets) mix-only))))))))
+
+(defun hash-integer (x seed &optional mix-only)
   (ecase *hash-size*
-    (32 (mix/32 hash-state word))
-    (128 (mix/128 hash-state word))))
+    (32 (hash32-integer x seed (byte-length x) mix-only))
+    (128 (hash128-integer x seed (byte-length x) mix-only))))
 
-(define-modify-macro mixf (word) mix)
+(defun hash-octets (x seed size &optional mix-only)
+  (ecase size
+    (32 (hash32-octets x seed (length x) mix-only))
+    (128 (hash128-octets x seed (length x) mix-only))))
 
-(define-modify-macro mixf32 (word) mix/32)
+(defun mix (seed x)
+  (let ((size *hash-size*))
+    (etypecase x
+      (octet-vector
+       (ecase size
+         (32 (hash32-octets x seed (length x) t))
+         (128 (hash128-octets x seed (length x) t))))
+      (integer
+       (ecase size
+         (32 (hash32-integer x seed (byte-length x) t))
+         (128 (hash128-integer x seed (byte-length x) t))))
+      (string
+       (hash-string x seed t)))))
 
-(defun mix/32 (hash-state word)
-  "Mix WORD and HASH-STATE into a new hash state, then mix that hash
-state again."
-  (declare (type hash hash-state)
-           (type word word))
-  (let* ((w1 (* word #xcc9e2d51))
-         (w2 (<< w1 15))
-         (w3 (* w2 #x1b873593))
-         (h1 (logxor hash-state w3))
-         (h2 (<< h1 13))
-         (h3 (* h2 5))
-         (h4 (+ h3 #xe6546b64)))
-    (declare (type word w1 w2 w3)
-             (type hash h1 h2 h3 h4))
-    h4))
+(define-modify-macro mixf (x) mix)
 
-(declaim (inline seed seeds))
+(defun finalize (seed x)
+  (let ((size *hash-size*))
+    (etypecase x
+      (octet-vector
+       (ecase size
+         (32 (hash32-octets x seed (length x)))
+         (128 (hash128-octets x seed (length x)))))
+      (integer
+       (ecase size
+         (32 (hash32-integer x seed (byte-length x)))
+         (128 (hash128-integer x seed (byte-length x)))))
+      (string
+       (hash-string x seed nil)))))
 
-(defun make-seed ()
-  (make-array 4 :element-type 'word))
-
-(defun seed (h1 h2 h3 h4 &optional (seed (make-seed)))
-  (declare (optimize speed))
-  (labels ((fill-seed (seed)
-             (declare (seed seed))
-             (setf (aref seed 0) h1
-                   (aref seed 1) h2
-                   (aref seed 2) h3
-                   (aref seed 3) h4)
-             (values)))
-    (etypecase seed
-      (number (let ((seed (make-seed)))
-                (fill-seed seed)
-                seed))
-      (seed   (fill-seed seed)
-       seed))))
-
-(defun seeds (seed)
-  (declare (optimize speed))
-  (etypecase seed
-    (number (values seed seed seed seed))
-    (seed   (values (aref seed 0)
-                    (aref seed 1)
-                    (aref seed 2)
-                    (aref seed 3)))))
-
-(defconstant +c1+ #x239b961b)
-(defconstant +c2+ #xab0e9789)
-(defconstant +c3+ #x38b34ae5)
-(defconstant +c4+ #xa1e38b93)
-
-(defun mix/128 (seed word)
-  (multiple-value-bind (h1 h2 h3 h4)
-      (seeds seed)
-    (declare (hash h1 h2 h3 h4))
-    (multiple-value-bind (k1 k2 k3 k4)
-        (seeds word)
-      (declare (word k1 k2 k3 k4))
-      (setf (values h1 h2 h3 h4)
-            (mix/128-1 h1 h2 h3 h4 k1 k2 k3 k4))
-      (seed h1 h2 h3 h4 seed))))
-
-(declaim (ftype (-> (u32 u32 u32 u32 u32 u32 u32 u32)
-                    (values u32 u32 u32 u32))
-                mix/128-1))
-
-(defun mix/128-1 (h1 h2 h3 h4 k1 k2 k3 k4)
-  (declare (optimize speed)
-           (hash h1 h2 h3 h4)
-           (word k1 k2 k3 k4))
-  (*= k1 +c1+)  (<<= k1 15) (*= k1 +c2+) (^= h1 k1)
-  (<<= h1 19)   (+= h1 h2)  (*= h1 (+ 5 #x561ccd1b))
-  (*= k2 +c2+)  (<<= k2 16) (*= k2 +c3+) (^= h2 k2)
-  (<<= h2 17)   (+= h2 h3)  (*= h2 (+ 5 #x0bcaa747))
-  (*= k3 +c3+)  (<<= k3 17) (*= k3 +c4+) (^= h3 k3)
-  (<<= h3 15)   (+= h3 h4)  (*= h3 (+ 5 #x96cd1c35))
-  (*= k4 +c4+)  (<<= k4 18) (*= k4 +c1+) (^= h4 k4)
-  (<<= h4 13)   (+= h1 h1)  (*= h4 (+ 5 #x32ac3b17))
-  (values h1 h2 h3 h4))
-
-(declaim (ftype (function (word) word) avalanche))
-
-(defun avalanche (hash-state)
-  "Force bits of HASH-STATE to avalanche."
-  (declare (type hash hash-state))
-  (let* ((h0 hash-state)
-         (h1 (logxor h0 (ldb (byte 16 16) h0)))
-         (h2 (* h1 #x85ebca6b))
-         (h3 (logxor h2 (ldb (byte 19 13) h2)))
-         (h4 (* h3 #xc2b2ae35))
-         (h5 (logxor h4 (ldb (byte 16 16) h4))))
-    (declare (type hash h0 h1 h2 h3 h4 h5))
-    h5))
-
-(defun finalize (hash-state length)
-  (ecase *hash-size*
-    (32 (finalize/32 hash-state length))
-    (128 (finalize/128 hash-state length))))
-
-(defun finalize/32 (hash-state length)
-  (let ((hash hash-state))
-    (declare (type hash hash))
-    (setf hash (avalanche (logxor hash length)))
-    hash))
-
-(defun finalize/128 (seed length)
-  (multiple-value-bind (h1 h2 h3 h4)
-      (seeds seed)
-    (declare (hash h1 h2 h3 h4))
-    (macrolet ((inc ()
-                 `(progn
-                    (+= h1 h2) (+= h1 h3) (+= h1 h4)
-                    (+= h2 h1) (+= h3 h1) (+= h4 h1))))
-      (^= h1 length) (^= h2 length)
-      (^= h3 length) (^= h4 length)
-      (inc)
-      (setf h1 (avalanche h1)
-            h2 (avalanche h2)
-            h3 (avalanche h3)
-            h4 (avalanche h4))
-      (inc))
-    (let ((out 0))
-      (setf (ldb (byte 32 0) out) h1
-            (ldb (byte 32 32) out) h2
-            (ldb (byte 32 64) out) h3
-            (ldb (byte 32 96) out) h4)
-      out)))
-
-(defun hash-integer (int seed)
-  (ecase *hash-size*
-    (32 (hash-integer/32 int seed))
-    (128 (hash-integer/128 int seed))))
-
-(defun hash-octets (vec seed)
-  (ecase *hash-size*
-    (32 (hash-octets/32 vec seed))
-    (128 (hash-octets/128 vec seed))))
-
-(defun hash-integer/32 (integer seed)
-  (let ((hash seed))
-    (dotimes (i (ceiling (integer-length integer) 32))
-      (mixf32 hash (ldb (byte 32 (* i 32)) integer)))
-    hash))
-
-(defun hash-octets/32 (vector seed)
-  (let ((hash seed)
-        (seq (make-array 4 :element-type 'octet)))
-    (declare (hash hash))
-    (let ((v (make-input-buffer :vector vector)))
-      (declare (dynamic-extent v))
-      (do ((octets (read-seq seq v)
-                   (read-seq seq v))
-           (word 0))
-          ((zerop octets) nil)
-        (declare (dynamic-extent word)
-                 (type word word)
-                 (type (integer 0 4) octets)
-                 (optimize speed))
-        (dotimes (i octets)
-          (setf (ldb (byte 8 (* 8 i)) word)
-                (aref seq i)))
-        (mixf32 hash word)))
-    hash))
-
-(defmacro while (test &body body)
-  `(loop (unless ,test (return))
-         ,@body))
-
-(defun hash-integer/128 (integer seed)
-  (multiple-value-bind (h1 h2 h3 h4)
-      (seeds seed)
-    (declare (hash h1 h2 h3 h4))
-    (let ((blocks (ceiling (integer-length integer) 32))
-          (i 0))
-      (labels ((extract (position)
-                 (ldb (byte 32 position) integer)))
-        (declare (inline extract))
-        (let* ((k1 0) (k2 0) (k3 0) (k4 0))
-          (declare (word k1 k2 k3 k4)
-                   (dynamic-extent k1 k2 k3 k4)
-                   (optimize speed))
-          (while (< i blocks)
-            (setf k1 (extract 0)
-                  k2 (extract 32)
-                  k3 (extract 64)
-                  k4 (extract 96))
-            (setf (values h1 h2 h3 h4)
-                  (mix/128-1 h1 h2 h3 h4
-                             k1 k2 k3 k4))
-            (incf i 4)))))
-    (seed h1 h2 h3 h4 seed)))
-
-(defun snarf-word (stream seq)
-  (let ((k 0) (eof t))
-    (declare (word k))
-    (dotimes (i (read-seq seq stream))
-      (declare (type (integer 0 4) i))
-      (setf eof nil
-            (ldb (byte 8 (* 8 i)) k)
-            (aref seq i)))
-    (values k eof)))
-
-(defun hash-octets/128 (vector seed)
-  (multiple-value-bind (h1 h2 h3 h4)
-      (seeds seed)
-    (declare (hash h1 h2 h3 h4))
-    (let ((seq (make-array 4 :element-type 'octet)))
-      (declare (inline snarf-word))
-      (let ((v (make-input-buffer :vector vector)))
-        (declare (dynamic-extent v))
-        (let* ((k1 0) (k2 0) (k3 0) (k4 0))
-          (declare (dynamic-extent k1 k2 k3 k4)
-                   (word k1 k2 k3 k4)
-                   (optimize speed))
-          (let ((eof nil))
-            (while (not eof)
-              (setf (values k1 eof) (snarf-word v seq)
-                    (values k2 eof) (snarf-word v seq)
-                    (values k3 eof) (snarf-word v seq)
-                    (values k4 eof) (snarf-word v seq))
-              (setf (values h1 h2 h3 h4)
-                    (mix/128-1 h1 h2 h3 h4
-                               k1 k2 k3 k4))))))
-      (seed h1 h2 h3 h4 seed))))
+
+;;;; Methods to hash literal objects.
 
 (define-condition unhashable-object-error (error)
   ((object :initarg :object))
@@ -323,75 +319,93 @@ state again."
              (format stream "Don't know how to hash ~S"
                      (slot-value condition 'object)))))
 
-(defgeneric murmurhash (object &key &allow-other-keys)
+(defgeneric murmurhash (object &key)
   (:documentation "Hash OBJECT using the 32-bit MurmurHash3 algorithm.")
   (:method ((object t) &key)
     (error 'unhashable-object-error :object object)))
 
 (defmethod murmurhash ((i integer) &key (seed *default-seed*) mix-only)
-  (let ((hash (hash-integer i seed)))
-    (if mix-only
-        hash
-        (finalize hash (integer-length i)))))
+  (hash-integer i seed mix-only))
 
 ;; HACK http://stackoverflow.com/a/6083441
 (defmethod murmurhash ((ov #.(class-of (make-array 0 :element-type 'octet)))
                        &key (seed *default-seed*) mix-only)
-  (let ((hash (hash-octets ov seed)))
-    (if mix-only
-        hash
-        (finalize hash (length ov)))))
-
-;; Other methods are special cases of integers or octets.
+  (hash-octets ov seed mix-only))
 
 (defmethod murmurhash ((s string) &key (seed *default-seed*) mix-only)
-  (murmurhash
-   (babel:string-to-octets s)
-   :seed seed :mix-only mix-only))
+  (hash-string s seed mix-only))
+
+;; Other methods are special cases of integers, strings, or octets.
 
 (defmethod murmurhash ((c character) &key (seed *default-seed*) mix-only)
-  (murmurhash (char-code c) :seed seed :mix-only mix-only))
+  (hash-integer (char-code c) seed mix-only))
 
 (defmethod murmurhash ((p package) &key (seed *default-seed*) mix-only)
-  (murmurhash (package-name p) :seed seed :mix-only mix-only))
+  (hash-string (package-name p) seed mix-only))
 
 (defmethod murmurhash ((s symbol) &key (seed *default-seed*) mix-only)
-  (let ((*package* (find-package :keyword)))
-    (murmurhash (prin1-to-string s) :seed seed :mix-only mix-only)))
-
-(defmethod murmurhash ((n ratio) &key (seed *default-seed*) mix-only)
-  (let ((hash seed))
-    (mixf hash (hash-integer (numerator n) hash))
-    (mixf hash (hash-integer (denominator n) hash))
-    (if mix-only hash
-        (finalize hash (cl:+ (integer-length (numerator n))
-                             (integer-length (denominator n)))))))
-
-(defmethod murmurhash ((n float) &key (seed *default-seed*) mix-only)
-  (murmurhash (rational n) :seed seed :mix-only mix-only))
-
-(defmethod murmurhash ((n complex) &key (seed *default-seed*) mix-only)
-  (let ((hash seed))
-    (declare (type hash hash))
-    (mixf hash (hash-integer (realpart n) hash))
-    (mixf hash (hash-integer (imagpart n) hash))
+  (let ((hash seed)
+        (pkg (package-name (symbol-package s)))
+        (sym (symbol-name s)))
+    (mixf hash pkg)
+    (mixf hash sym)
     (if mix-only
         hash
-        (finalize hash (cl:+ (integer-length (realpart n))
-                             (integer-length (imagpart n)))))))
+        (finalize hash (+ (length pkg) (length sym))))))
+
+(defmethod murmurhash ((p pathname) &key (seed *default-seed*) mix-only)
+  (let ((s (namestring p)))
+    (hash-string s seed mix-only)))
+
+(defmethod murmurhash ((n ratio) &key (seed *default-seed*) mix-only)
+  (let ((n (numerator n))
+        (d (denominator n))
+        (hash seed))
+    (declare (integer n d))
+    (mixf hash n)
+    (mixf hash d)
+    (if mix-only
+        hash
+        (finalize hash
+                  (cl:+ (integer-length (numerator n))
+                        (integer-length (denominator n)))))))
+
+(defmethod murmurhash ((n float) &key (seed *default-seed*) mix-only)
+  (let ((hash seed))
+    (multiple-value-bind (signif expon sign)
+        (integer-decode-float n)
+      (mixf hash signif)
+      (mixf hash expon)
+      (mixf hash sign)
+      (if mix-only
+          hash
+          (finalize hash (float-digits n))))))
+
+(defmethod murmurhash ((n complex) &key (seed *default-seed*) mix-only)
+  (let ((real (realpart n))
+        (imag (imagpart n))
+        (hash seed))
+    (mixf hash real)
+    (mixf hash imag)
+    (if mix-only
+        hash
+        (finalize hash
+                  (cl:+ (integer-length real)
+                        (integer-length imag))))))
 
 (defmethod murmurhash ((bv bit-vector) &key (seed *default-seed*) mix-only)
   (let ((int 0))
     ;; Presume little-endian.
     (dotimes (i (array-total-size bv))
       (setf (ldb (byte 1 i) int) (row-major-aref bv i)))
-    (murmurhash int :seed seed :mix-only mix-only)))
+    (hash-integer int seed mix-only)))
 
 (defmethod murmurhash ((cons cons) &key (seed *default-seed*) mix-only)
   (let ((hash seed)
         (len 0))
-    (declare (fixnum len))
-    (loop (cond ((null cons) (return))
+    (loop (cond ((null cons)
+                 (return))
+                ;; Improper list.
                 ((atom cons)
                  (incf len)
                  (mixf hash (murmurhash cons :seed hash :mix-only t))
@@ -399,29 +413,37 @@ state again."
                 (t (incf len)
                    (mixf hash (murmurhash (car cons) :seed hash :mix-only t))
                    (setf cons (cdr cons)))))
-    (if mix-only hash (finalize hash len))))
+    (if mix-only
+        hash
+        (finalize hash len))))
 
 (defmethod murmurhash ((array array) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
-    (mixf hash (hash-integer (array-rank array) seed))
-    (mixf hash (murmurhash (array-dimensions array) :seed seed :mix-only t))
-    (mixf hash (murmurhash (array-element-type array) :seed seed :mix-only t))
+    (mixf hash (array-rank array))
+    (loop for dimension in (array-dimensions array)
+          do (mixf hash dimension))
+    (mixf hash (murmurhash (array-element-type array)
+                           :seed seed :mix-only t))
     (loop for elt across array
           do (mixf hash (murmurhash elt :seed hash :mix-only t)))
-    (if mix-only hash (finalize hash (array-total-size array)))))
+    (if mix-only
+        hash
+        (finalize hash (array-total-size array)))))
 
 (defmethod murmurhash ((ht hash-table) &key (seed *default-seed*) mix-only)
   (let ((hash seed))
-    (mixf hash (murmurhash (hash-table-test ht) :seed hash :mix-only t))
+    (mixf hash (string (hash-table-test ht)))
     (maphash
      (lambda (k v)
        (mixf hash (murmurhash k :seed hash :mix-only t))
        (mixf hash (murmurhash v :seed hash :mix-only t)))
      ht)
-    (if mix-only hash (finalize hash (hash-table-count ht)))))
+    (if mix-only
+        hash
+        (finalize hash (hash-table-count ht)))))
 
-(defmethod murmurhash ((p pathname) &key (seed *default-seed*) mix-only)
-  (murmurhash (namestring p) :seed seed :mix-only mix-only))
+
+;;;; Derived utilities.
 
 ;; Cf. http://bitsquid.blogspot.com/2009/09/simple-perfect-murmur-hashing.html
 (defun make-perfect-seed (values)
@@ -466,3 +488,43 @@ Return NIL if no perfect seed was found."
              (setf (gethash hash ht) str))))
      (format *trace-output* "Hashed ~D symbols with ~D collision~:P"
              syms collisions))))
+
+
+
+;;; http://code.google.com/p/smhasher/source/browse/trunk/KeysetTest.cpp
+
+(defconstant +32-bit-verification+ #xb0f57ee3) ;2968878819
+
+(defconstant +128-bit-verification+ #xb3ece62a) ;3018647082
+
+(defun verification-value (hashbits)
+  (let ((hash (ecase hashbits
+                (32 #'hash32-octets)
+                (128 #'hash128-octets))))
+    (flet ((hash (&rest args) (apply hash args)))
+      (let* ((*hash-size* hashbits)
+             (hashbytes (ceiling hashbits 8))
+             (key (make-array 256 :element-type 'octet :initial-element 0))
+             (hashes (make-array (* hashbytes 256) :element-type 'octet :initial-element 0)))
+        (loop for i from 0 below 256
+              for j from 0 by hashbytes
+              do (setf (aref key i) i)
+                 (let ((hash (hash (subseq key 0 (1+ i))
+                                   (- 256 i)
+                                   i    ;sic
+                                   )))
+                   (loop for k from 0 below hashbytes
+                         do (setf (aref hashes (+ j k))
+                                  (ldb (byte 8 (* 8 k)) hash)))))
+        (let ((final (hash hashes 0 (* hashbytes 256))))
+          (ldb (byte 32 0) final))))))
+
+(defun verification-test (hashbits expected)
+  (let ((value (verification-value hashbits)))
+    (values
+     (= value expected)
+     value expected)))
+
+(defun verify ()
+  (and (verification-test 32 +32-bit-verification+)
+       (verification-test 128 +128-bit-verification+)))

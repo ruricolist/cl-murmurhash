@@ -5,7 +5,10 @@ algorithm."
 Use MURMURHASH to get the hash of an object:
 
      (murmurhash:murmurhash "Hash me")
-     => 696528482
+     => 841354010
+
+(You may want to use MURMURHASH:VERIFY to determine that the algorithm
+is implemented correctly for your platform.)
 
 If you want to use a different seed, you can bind the parameter
 *DEFAULT-SEED*, or pass a keyword argument:
@@ -14,10 +17,6 @@ If you want to use a different seed, you can bind the parameter
 
 The size of the hash is controlled by *HASH-SIZE*, which can be bound
 to 32 (the default) or 128.
-
-Strings are converted to octets using FLEXI-STREAMS:STRING-TO-OCTETS
-and the external format specified in *EXTERNAL-FORMAT*. The default
-encoding is UTF-8.
 
 There are two utilities for perfect hashing. MAKE-PERFECT-SEED takes a
 list of objects and tries to find a seed that hashes them all without
