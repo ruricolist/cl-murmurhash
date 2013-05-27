@@ -6,7 +6,6 @@
   :license "MIT"
   :serial t
   :depends-on (#:babel
-               #:fast-io
                #+sbcl #:sb-rotate-byte)
   :components ((:file "package")
                (:file "cl-murmurhash")))

@@ -12,7 +12,12 @@
 
 (deftype u32 () '(unsigned-byte 32))
 
+(deftype octet-vector (&optional n)
+  `(simple-array (unsigned-byte 8) (,n)))
+
 (deftype -> (args result) `(function ,args ,result))
+
+(deftype index () '(integer 0 #.array-dimension-limit))
 
 (defparameter *default-seed* #xdeadbeef) ;It had to be something.
 
@@ -53,6 +58,25 @@
   (logxor a b))
 
 (define-modify-macro ^= (int) ^)
+
+;; Simple input buffers.
+
+(declaim (inline make-input-buffer))    ;For stack-allocation.
+
+(defstruct input-buffer
+  (vector (error "No vector") :type octet-vector :read-only t)
+  (pointer 0 :type index))
+
+(defun read-seq (seq buf)
+  (declare (octet-vector seq) (optimize speed))
+  (with-accessors ((vec input-buffer-vector)
+                   (pointer input-buffer-pointer))
+      buf
+    (replace seq vec :start2 pointer)
+    (let ((old pointer))
+      (setf pointer
+            (min (length vec) (+ pointer (length seq))))
+      (- pointer old))))
 
 ;; The mixer and finalizer.
 
@@ -216,9 +240,10 @@ state again."
   (let ((hash seed)
         (seq (make-array 4 :element-type 'octet)))
     (declare (hash hash))
-    (fast-io:with-fast-input (v vector)
-      (do ((octets (fast-io:fast-read-sequence seq v)
-                   (fast-io:fast-read-sequence seq v))
+    (let ((v (make-input-buffer :vector vector)))
+      (declare (dynamic-extent v))
+      (do ((octets (read-seq seq v)
+                   (read-seq seq v))
            (word 0))
           ((zerop octets) nil)
         (declare (dynamic-extent word)
@@ -262,7 +287,7 @@ state again."
 (defun snarf-word (stream seq)
   (let ((k 0) (eof t))
     (declare (word k))
-    (dotimes (i (fast-io:fast-read-sequence seq stream))
+    (dotimes (i (read-seq seq stream))
       (declare ((integer 0 4) i))
       (setf eof nil
             (ldb (byte 8 (* 8 i)) k)
@@ -275,7 +300,8 @@ state again."
     (declare (hash h1 h2 h3 h4))
     (let ((seq (make-array 4 :element-type 'octet)))
       (declare (inline snarf-word))
-      (fast-io:with-fast-input (v vector)
+      (let ((v (make-input-buffer :vector vector)))
+        (declare (dynamic-extent v))
         (let* ((k1 0) (k2 0) (k3 0) (k4 0))
           (declare (dynamic-extent k1 k2 k3 k4)
                    (word k1 k2 k3 k4)
