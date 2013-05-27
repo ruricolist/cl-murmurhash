@@ -288,7 +288,7 @@ state again."
   (let ((k 0) (eof t))
     (declare (word k))
     (dotimes (i (read-seq seq stream))
-      (declare ((integer 0 4) i))
+      (declare (type (integer 0 4) i))
       (setf eof nil
             (ldb (byte 8 (* 8 i)) k)
             (aref seq i)))
