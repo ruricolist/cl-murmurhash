@@ -275,8 +275,8 @@
     (32 (hash32-integer x seed (byte-length x) mix-only))
     (128 (hash128-integer x seed (byte-length x) mix-only))))
 
-(defun hash-octets (x seed size &optional mix-only)
-  (ecase size
+(defun hash-octets (x seed &optional mix-only)
+  (ecase *hash-size*
     (32 (hash32-octets x seed (length x) mix-only))
     (128 (hash128-octets x seed (length x) mix-only))))
 
