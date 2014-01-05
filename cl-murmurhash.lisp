@@ -113,7 +113,6 @@
   (char-code (schar string pos)))
 
 ;; http://www.foldr.org/~michaelw/log/programming/lisp/icfp-contest-2006-vm
-
 (defmacro tree-case (keyform &body cases)
   (let* ((default (find t cases :key #'car))
          (cases (remove default cases)))
@@ -397,7 +396,7 @@
 
 (defgeneric murmurhash (object &key)
   (:documentation "Hash OBJECT using the 32-bit MurmurHash3 algorithm.")
-  (:method ((object t) &key)
+  (:method ((object t) &key &allow-other-keys)
     (error 'unhashable-object-error :object object)))
 
 (defmethod murmurhash ((i integer) &key (seed *default-seed*) mix-only)
