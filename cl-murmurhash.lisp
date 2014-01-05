@@ -13,6 +13,13 @@
 
 (deftype index () '(integer 0 #.array-dimension-limit))
 
+(deftype 8-bit-string ()
+  '(and simple-base-string (satisfies 8-bit-string?)))
+
+(defun 8-bit-string? (s)
+  (and (typep s 'simple-base-string)
+       (every (lambda (c) (< (char-code c) 256)) s)))
+
 (defparameter *default-seed* #xdeadbeef) ;It had to be something.
 
 (defparameter *hash-size* 32)
@@ -109,7 +116,7 @@
 (declaim (ftype (-> (simple-string index) (unsigned-byte 8)) char-ref))
 
 (defun char-ref (string pos)
-  (declare (optimize speed) (simple-base-string string) (index pos))
+  (declare (optimize speed) (8-bit-string string) (index pos))
   (char-code (schar string pos)))
 
 ;; http://www.foldr.org/~michaelw/log/programming/lisp/icfp-contest-2006-vm
@@ -195,7 +202,7 @@
           (hash32-body byte-ref))
         (hash32-body byte-ref)))
 
-  (defun hash32-base-string (vec seed &optional (len (length vec)) mix-only)
+  (defun hash32-8-bit-string (vec seed &optional (len (length vec)) mix-only)
     (declare (index len) (simple-string vec))
     (hash32-body char-ref)))
 
@@ -325,25 +332,26 @@
     (declare (integer vec))
     (hash128-body byte-ref))
 
-  (defun hash128-base-string (vec seed &optional (len (length vec)) mix-only)
+  (defun hash128-8-bit-string (vec seed &optional (len (length vec)) mix-only)
     (declare (index len) (simple-string vec))
     (hash128-body char-ref)))
 
 (declaim (inline hash-string mix32 finalize32 mix128 finalize128))
 
 (defun hash-string (s seed mix-only)
-  (let* ((size *hash-size*)
-         (hash (ecase size
-                 (32 #'hash32-base-string)
-                 (128 #'hash128-base-string))))
-    (cond ((typep s 'simple-base-string)
-           (funcall hash s seed (length s) mix-only))
-          ((every (lambda (c) (typep c 'base-char)) s)
-           (funcall hash (coerce s 'simple-base-string) seed (length s) mix-only))
-          (t (let ((octets (babel:string-to-octets s)))
-               (ecase size
-                 (32 (hash32-octets octets seed (length octets) mix-only))
-                 (128 (hash128-octets octets seed (length octets) mix-only))))))))
+  (let ((size *hash-size*))
+    (flet ((hash-string (s)
+             (ecase size
+               (32 (hash32-8-bit-string s seed (length s) mix-only))
+               (128 (hash128-8-bit-string s seed (length s) mix-only))))
+           (hash-octets (octets)
+             (ecase size
+               (32 (hash32-octets octets seed (length octets) mix-only))
+               (128 (hash128-octets octets seed (length octets) mix-only)))))
+      (declare (dynamic-extent (function hash-string) (function hash-octets)))
+      (if (typep s '8-bit-string)
+          (hash-string s)
+          (hash-octets (babel:string-to-octets s))))))
 
 (defun hash-integer (x seed &optional mix-only)
   (ecase *hash-size*
