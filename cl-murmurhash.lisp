@@ -2,12 +2,14 @@
 
 (in-package #:cl-murmurhash)
 
-(deftype octet () '(unsigned-byte 8))
+(eval-when (:compile-toplevel :load-toplevel)
 
-(deftype u32 () '(unsigned-byte 32))
+  (deftype octet () '(unsigned-byte 8))
 
-(deftype octet-vector (&optional n)
-  `(simple-array (unsigned-byte 8) (,n)))
+  (deftype u32 () '(unsigned-byte 32))
+
+  (deftype octet-vector (&optional n)
+    `(simple-array (unsigned-byte 8) (,n))))
 
 (deftype -> (args result) `(function ,args ,result))
 
