@@ -118,7 +118,7 @@
 (declaim (ftype (-> (simple-string index) (unsigned-byte 8)) char-ref))
 
 (defun char-ref (string pos)
-  (declare (optimize speed) (8-bit-string string) (index pos))
+  (declare (optimize speed) (index pos))
   (char-code (schar string pos)))
 
 ;; http://www.foldr.org/~michaelw/log/programming/lisp/icfp-contest-2006-vm
