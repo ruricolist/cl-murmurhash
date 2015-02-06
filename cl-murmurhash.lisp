@@ -148,7 +148,7 @@
                   `(go ,',break)))
        (tagbody
           (tree-case ,value
-            ,@(loop for (tag . body) in clauses
+            ,@(loop for (tag . nil) in clauses
                     collect `(,tag (go ,tag)))
             (t (break)))
           ,@(apply #'append clauses)
