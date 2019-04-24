@@ -459,6 +459,10 @@
   (let ((hash seed))
     (multiple-value-bind (signif expon sign)
         (integer-decode-float n)
+      ;; NB The spec allows `integer-decode-float` to return an
+      ;; arbitrary exponent for zero.
+      (when (zerop n)
+        (setf expon 0))
       (mixf hash signif)
       (mixf hash expon)
       (mixf hash sign)
