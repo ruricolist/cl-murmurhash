@@ -430,7 +430,8 @@
 
 (defmethod murmurhash ((s symbol) &key (seed *default-seed*) mix-only)
   (let ((hash seed)
-        (pkg (package-name (symbol-package s)))
+        (pkg (let ((p (symbol-package s)))
+               (if p  (package-name p) "")))
         (sym (symbol-name s)))
     (mixf hash pkg)
     (mixf hash sym)
