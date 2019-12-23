@@ -12,6 +12,6 @@
   :in-order-to ((test-op (test-op "cl-murmurhash/test"))))
 
 (defsystem "cl-murmurhash/test"
-  :depends-on ("cl-murmurhash")
+  :depends-on ("cl-murmurhash" "fiveam")
   :components ((:file "test"))
   :perform (test-op (o c) (symbol-call :cl-murmurhash/test :run-tests)))
