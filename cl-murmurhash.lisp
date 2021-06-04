@@ -335,7 +335,7 @@
     (declare (index len) (simple-string vec))
     (hash128-body char-ref)))
 
-(declaim (inline hash-string mix32 finalize32 mix128 finalize128))
+(declaim (inline #-abcl hash-string mix32 finalize32 mix128 finalize128))
 
 (defun hash-string (s seed mix-only)
   (let ((size *hash-size*))
