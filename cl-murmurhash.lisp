@@ -81,15 +81,12 @@
 (define-modify-macro ^= (int) ^)
 
 (defmacro ~> (needle &rest holes)
-  (flet ((enlist (x)
-           (if (listp x) x (list x))))
-    (if (not holes)
-        needle
-        `(~> ,(let ((hole (if (listp (first holes))
-                              (first holes)
-                              (list (first holes)))))
-                `(,(car hole) ,needle ,@(cdr hole)))
-             ,@(rest holes)))))
+  (if (not holes) needle
+      `(~> ,(let ((hole (if (listp (first holes))
+                            (first holes)
+                            (list (first holes)))))
+              `(,(car hole) ,needle ,@(cdr hole)))
+           ,@(rest holes))))
 
 
 ;;;; The actual implementation.
